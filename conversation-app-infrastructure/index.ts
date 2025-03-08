@@ -7,6 +7,9 @@ import * as random from '@pulumi/random';
 const config = new pulumi.Config();
 const appName = 'conversation-app';
 const appLabels = { app: appName };
+// Add monitoring configuration
+const enableMonitoring = config.getBoolean('enableMonitoring') ?? true;
+const monitoringNamespace = 'monitoring';
 
 // Generate a random password for the minio (S3) admin user
 const minioPassword = new random.RandomPassword('minio-password', {
@@ -380,6 +383,447 @@ const ingress = new k8s.networking.v1.Ingress('app-ingress', {
     },
 }, { provider });
 
+// Deploy Kube-Prometheus Stack for Kubernetes monitoring and visualization
+if (enableMonitoring) {
+    // Create a namespace for monitoring tools
+    const monitoringNs = new k8s.core.v1.Namespace('monitoring-namespace', {
+        metadata: {
+            name: monitoringNamespace,
+        },
+    }, { provider });
+
+    // Deploy Prometheus Operator using Helm
+    const prometheusOperator = new k8s.helm.v3.Release('prometheus-operator', {
+        chart: 'kube-prometheus-stack',
+        version: '45.7.1', // Specify a stable version
+        namespace: monitoringNs.metadata.name,
+        repositoryOpts: {
+            repo: 'https://prometheus-community.github.io/helm-charts',
+        },
+        values: {
+            grafana: {
+                enabled: true,
+                adminPassword: 'admin', // In production, use a secret
+                service: {
+                    type: 'ClusterIP',
+                },
+                ingress: {
+                    enabled: true,
+                    hosts: ['grafana.conversation-app.local'],
+                    path: '/',
+                },
+                additionalDataSources: [
+                    {
+                        name: 'Loki',
+                        type: 'loki',
+                        url: 'http://loki-gateway.monitoring:80',
+                        access: 'proxy',
+                    },
+                ],
+                dashboardProviders: {
+                    dashboardproviders: {
+                        apiVersion: 1,
+                        providers: [
+                            {
+                                name: 'kubernetes',
+                                orgId: 1,
+                                folder: 'Kubernetes',
+                                type: 'file',
+                                disableDeletion: false,
+                                editable: true,
+                                options: {
+                                    path: '/var/lib/grafana/dashboards/kubernetes',
+                                },
+                            },
+                        ],
+                    },
+                },
+                resources: {
+                    limits: {
+                        cpu: '200m',
+                        memory: '256Mi',
+                    },
+                    requests: {
+                        cpu: '100m',
+                        memory: '128Mi',
+                    },
+                },
+            },
+            prometheus: {
+                enabled: true,
+                service: {
+                    type: 'ClusterIP',
+                },
+                ingress: {
+                    enabled: true,
+                    hosts: ['prometheus.conversation-app.local'],
+                    path: '/',
+                },
+                prometheusSpec: {
+                    resources: {
+                        limits: {
+                            cpu: '500m',
+                            memory: '512Mi',
+                        },
+                        requests: {
+                            cpu: '200m',
+                            memory: '256Mi',
+                        },
+                    },
+                    retention: '1d', // Reduce retention period to save resources
+                    scrapeInterval: '30s', // Increase scrape interval to reduce load
+                },
+            },
+            alertmanager: {
+                enabled: true,
+                service: {
+                    type: 'ClusterIP',
+                },
+                ingress: {
+                    enabled: true,
+                    hosts: ['alertmanager.conversation-app.local'],
+                    path: '/',
+                },
+                alertmanagerSpec: {
+                    resources: {
+                        limits: {
+                            cpu: '100m',
+                            memory: '256Mi',
+                        },
+                        requests: {
+                            cpu: '50m',
+                            memory: '128Mi',
+                        },
+                    },
+                },
+            },
+            prometheusOperator: {
+                resources: {
+                    limits: {
+                        cpu: '200m',
+                        memory: '256Mi',
+                    },
+                    requests: {
+                        cpu: '100m',
+                        memory: '128Mi',
+                    },
+                },
+            },
+            'kube-state-metrics': {
+                resources: {
+                    limits: {
+                        cpu: '100m',
+                        memory: '128Mi',
+                    },
+                    requests: {
+                        cpu: '50m',
+                        memory: '64Mi',
+                    },
+                },
+            },
+            nodeExporter: {
+                enabled: false,
+            },
+        },
+        timeout: 600, // 10 minutes timeout
+    }, { provider });
+
+    // Deploy Loki for log aggregation
+    const loki = new k8s.helm.v3.Release('loki-stack', {
+        chart: 'loki-stack',
+        version: '2.9.10', // Specify a stable version
+        namespace: monitoringNs.metadata.name,
+        repositoryOpts: {
+            repo: 'https://grafana.github.io/helm-charts',
+        },
+        values: {
+            loki: {
+                enabled: true,
+            },
+            promtail: {
+                enabled: true,
+                config: {
+                    lokiAddress: 'http://loki-gateway.monitoring:80/loki/api/v1/push',
+                },
+            },
+            grafana: {
+                enabled: false, // We're using the Grafana from kube-prometheus-stack
+            },
+        },
+    }, { provider });
+
+    // Deploy Kubernetes Dashboard for a native K8s UI
+    const k8sDashboard = new k8s.helm.v3.Release('kubernetes-dashboard', {
+        chart: 'kubernetes-dashboard',
+        version: '6.0.8', // Specify a stable version
+        namespace: monitoringNs.metadata.name,
+        repositoryOpts: {
+            repo: 'https://kubernetes.github.io/dashboard/',
+        },
+        values: {
+            service: {
+                type: 'ClusterIP',
+            },
+            ingress: {
+                enabled: true,
+                hosts: ['k8s-dashboard.conversation-app.local'],
+                path: '/',
+            },
+            metricsScraper: {
+                enabled: true,
+            },
+        },
+    }, { provider });
+
+    // Create an Ingress for the monitoring tools
+    // Get the enableMonitoringIngress config value, default to false to avoid initial deployment issues
+    const enableMonitoringIngress = config.getBoolean('enableMonitoringIngress') ?? false;
+    
+    if (enableMonitoringIngress) {
+        // Create stable services that select the backend pods by labels
+        // These services will have consistent names regardless of the underlying deployment names
+        
+        // Grafana Service
+        const stableGrafanaService = new k8s.core.v1.Service('stable-grafana-service', {
+            metadata: {
+                name: 'stable-grafana',
+                namespace: monitoringNs.metadata.name,
+                annotations: {
+                    'nginx.ingress.kubernetes.io/service-upstream': 'true',
+                },
+            },
+            spec: {
+                selector: {
+                    'app.kubernetes.io/name': 'grafana',
+                },
+                ports: [{
+                    name: 'http',
+                    port: 80,
+                    targetPort: 3000,
+                    protocol: 'TCP',
+                }],
+            },
+        }, { provider, dependsOn: [prometheusOperator] });
+
+        // Prometheus Service
+        const stablePrometheusService = new k8s.core.v1.Service('stable-prometheus-service', {
+            metadata: {
+                name: 'stable-prometheus',
+                namespace: monitoringNs.metadata.name,
+                annotations: {
+                    'nginx.ingress.kubernetes.io/service-upstream': 'true',
+                },
+            },
+            spec: {
+                selector: {
+                    'app.kubernetes.io/name': 'prometheus',
+                },
+                ports: [{
+                    name: 'http',
+                    port: 9090,
+                    targetPort: 9090,
+                    protocol: 'TCP',
+                }],
+            },
+        }, { provider, dependsOn: [prometheusOperator] });
+
+        // Alertmanager Service
+        const stableAlertmanagerService = new k8s.core.v1.Service('stable-alertmanager-service', {
+            metadata: {
+                name: 'stable-alertmanager',
+                namespace: monitoringNs.metadata.name,
+                annotations: {
+                    'nginx.ingress.kubernetes.io/service-upstream': 'true',
+                },
+            },
+            spec: {
+                selector: {
+                    'app.kubernetes.io/name': 'alertmanager',
+                },
+                ports: [{
+                    name: 'http',
+                    port: 9093,
+                    targetPort: 9093,
+                    protocol: 'TCP',
+                }],
+            },
+        }, { provider, dependsOn: [prometheusOperator] });
+
+        // Kubernetes Dashboard Service
+        const stableK8sDashboardService = new k8s.core.v1.Service('stable-k8s-dashboard-service', {
+            metadata: {
+                name: 'stable-k8s-dashboard',
+                namespace: monitoringNs.metadata.name,
+                annotations: {
+                    'nginx.ingress.kubernetes.io/service-upstream': 'true',
+                },
+            },
+            spec: {
+                selector: {
+                    'app.kubernetes.io/component': 'kubernetes-dashboard',
+                },
+                ports: [{
+                    name: 'https',
+                    port: 443,
+                    targetPort: 8443,
+                    protocol: 'TCP',
+                }],
+            },
+        }, { provider, dependsOn: [k8sDashboard] });
+
+        // Create separate ingress resources for each service
+        
+        // Grafana Ingress
+        const grafanaIngress = new k8s.networking.v1.Ingress('grafana-ingress', {
+            metadata: {
+                name: 'grafana-ingress',
+                namespace: monitoringNs.metadata.name,
+                annotations: {
+                    'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
+                    'kubernetes.io/ingress.class': 'nginx',
+                    'nginx.ingress.kubernetes.io/ssl-redirect': 'false',
+                    'nginx.ingress.kubernetes.io/proxy-body-size': '0',
+                    'nginx.ingress.kubernetes.io/proxy-read-timeout': '600',
+                    'nginx.ingress.kubernetes.io/proxy-send-timeout': '600',
+                },
+            },
+            spec: {
+                rules: [
+                    {
+                        host: 'conversation-app.local',
+                        http: {
+                            paths: [
+                                {
+                                    path: '/grafana(/|$)(.*)',
+                                    pathType: 'ImplementationSpecific',
+                                    backend: {
+                                        service: {
+                                            name: stableGrafanaService.metadata.name,
+                                            port: { number: 80 },
+                                        },
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        }, { provider, dependsOn: [stableGrafanaService] });
+
+        // Prometheus Ingress
+        const prometheusIngress = new k8s.networking.v1.Ingress('prometheus-ingress', {
+            metadata: {
+                name: 'prometheus-ingress',
+                namespace: monitoringNs.metadata.name,
+                annotations: {
+                    'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
+                    'kubernetes.io/ingress.class': 'nginx',
+                    'nginx.ingress.kubernetes.io/ssl-redirect': 'false',
+                    'nginx.ingress.kubernetes.io/proxy-body-size': '0',
+                    'nginx.ingress.kubernetes.io/proxy-read-timeout': '600',
+                    'nginx.ingress.kubernetes.io/proxy-send-timeout': '600',
+                },
+            },
+            spec: {
+                rules: [
+                    {
+                        host: 'conversation-app.local',
+                        http: {
+                            paths: [
+                                {
+                                    path: '/prometheus(/|$)(.*)',
+                                    pathType: 'ImplementationSpecific',
+                                    backend: {
+                                        service: {
+                                            name: stablePrometheusService.metadata.name,
+                                            port: { number: 9090 },
+                                        },
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        }, { provider, dependsOn: [stablePrometheusService] });
+
+        // Alertmanager Ingress
+        const alertmanagerIngress = new k8s.networking.v1.Ingress('alertmanager-ingress', {
+            metadata: {
+                name: 'alertmanager-ingress',
+                namespace: monitoringNs.metadata.name,
+                annotations: {
+                    'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
+                    'kubernetes.io/ingress.class': 'nginx',
+                    'nginx.ingress.kubernetes.io/ssl-redirect': 'false',
+                    'nginx.ingress.kubernetes.io/proxy-body-size': '0',
+                    'nginx.ingress.kubernetes.io/proxy-read-timeout': '600',
+                    'nginx.ingress.kubernetes.io/proxy-send-timeout': '600',
+                },
+            },
+            spec: {
+                rules: [
+                    {
+                        host: 'conversation-app.local',
+                        http: {
+                            paths: [
+                                {
+                                    path: '/alertmanager(/|$)(.*)',
+                                    pathType: 'ImplementationSpecific',
+                                    backend: {
+                                        service: {
+                                            name: stableAlertmanagerService.metadata.name,
+                                            port: { number: 9093 },
+                                        },
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        }, { provider, dependsOn: [stableAlertmanagerService] });
+
+        // Kubernetes Dashboard Ingress
+        const k8sDashboardIngress = new k8s.networking.v1.Ingress('k8s-dashboard-ingress', {
+            metadata: {
+                name: 'k8s-dashboard-ingress',
+                namespace: monitoringNs.metadata.name,
+                annotations: {
+                    'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
+                    'kubernetes.io/ingress.class': 'nginx',
+                    'nginx.ingress.kubernetes.io/ssl-redirect': 'false',
+                    'nginx.ingress.kubernetes.io/backend-protocol': 'HTTPS',
+                    'nginx.ingress.kubernetes.io/proxy-body-size': '0',
+                    'nginx.ingress.kubernetes.io/proxy-read-timeout': '600',
+                    'nginx.ingress.kubernetes.io/proxy-send-timeout': '600',
+                },
+            },
+            spec: {
+                rules: [
+                    {
+                        host: 'conversation-app.local',
+                        http: {
+                            paths: [
+                                {
+                                    path: '/k8s-dashboard(/|$)(.*)',
+                                    pathType: 'ImplementationSpecific',
+                                    backend: {
+                                        service: {
+                                            name: stableK8sDashboardService.metadata.name,
+                                            port: { number: 443 },
+                                        },
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        }, { provider, dependsOn: [stableK8sDashboardService] });
+    }
+}
+
 // Export important information
 export const minioConsoleUrl = pulumi.interpolate`http://conversation-app.local/minio`;
 export const minioApiUrl = pulumi.interpolate`http://conversation-app.local/minio-api`;
@@ -389,6 +833,12 @@ export const minioAdminPassword = minioPassword.result;
 export const mongoAdminUser = 'admin';
 export const mongoAdminPassword = mongoDbPassword.result;
 export const namespaceName = namespace.metadata.name;
+
+// Add monitoring URLs if enabled
+export const grafanaUrl = enableMonitoring ? pulumi.interpolate`http://conversation-app.local/grafana` : undefined;
+export const prometheusUrl = enableMonitoring ? pulumi.interpolate`http://conversation-app.local/prometheus` : undefined;
+export const alertmanagerUrl = enableMonitoring ? pulumi.interpolate`http://conversation-app.local/alertmanager` : undefined;
+export const k8sDashboardUrl = enableMonitoring ? pulumi.interpolate`http://conversation-app.local/k8s-dashboard` : undefined;
 
 // Add hosts entry reminder
 export const hostsEntryReminder = pulumi.interpolate`
