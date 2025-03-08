@@ -1,0 +1,23 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package.json package-lock.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy source code
+COPY . .
+
+# Build TypeScript
+RUN npm run build
+
+# Expose ports
+# - 3000: API server
+# - 9229: Node.js debugger
+EXPOSE 3000 9229
+
+# Start the server with debugging enabled
+CMD ["node", "--inspect=0.0.0.0:9229", "dist/index.js"] 

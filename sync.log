@@ -1,0 +1,16 @@
+Running in background mode, logging to sync.log
+Starting code synchronization for backend...
+Found backend pod: backend-6476464655-9mgrp
+Watching for changes in src directory...
+Press Ctrl+C to stop synchronization
+[33m[nodemon] 3.1.9[39m
+[33m[nodemon] to restart at any time, enter `rs`[39m
+[33m[nodemon] watching path(s): src/**/*[39m
+[33m[nodemon] watching extensions: ts[39m
+[32m[nodemon] starting `npm run build && kubectl cp dist/ conversation-app/backend-6476464655-9mgrp:/app/ && echo Sat Mar  8 20:38:44 IST 2025: Code synchronized`[39m
+
+> conversation-processor-server@1.0.0 build
+> tsc
+
+Sat Mar 8 20:38:44 IST 2025: Code synchronized
+[32m[nodemon] clean exit - waiting for changes before restart[39m

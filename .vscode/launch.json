@@ -1,0 +1,35 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Attach to Backend",
+      "address": "localhost",
+      "port": 9229,
+      "localRoot": "${workspaceFolder}/conversation-processor-server",
+      "remoteRoot": "${workspaceFolder}/conversation-processor-server",
+      "skipFiles": ["<node_internals>/**"],
+      "outFiles": [
+        "${workspaceFolder}/conversation-processor-server/dist/**/*.js"
+      ],
+      "restart": true
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Launch Backend (Local)",
+      "program": "${workspaceFolder}/conversation-processor-server/src/index.ts",
+      "preLaunchTask": "tsc: build - conversation-processor-server/tsconfig.json",
+      "outFiles": [
+        "${workspaceFolder}/conversation-processor-server/dist/**/*.js"
+      ],
+      "skipFiles": ["<node_internals>/**"],
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "sourceMaps": true,
+      "cwd": "${workspaceFolder}/conversation-processor-server"
+    }
+  ]
+}
