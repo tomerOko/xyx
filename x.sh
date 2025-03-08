@@ -197,6 +197,32 @@ start_server() {
       kill -9 $SERVER_PID
     fi
     
+    # Ask user if they want to use Docker with file syncing
+    if [ "$DOCKER_AVAILABLE" = true ]; then
+      echo -e "${BLUE}How would you like to start the server?${NC}"
+      echo "1) Local development (npm run dev)"
+      echo "2) Docker with file syncing (recommended for development)"
+      read -p "Enter your choice (1 or 2): " server_choice
+      
+      if [ "$server_choice" = "2" ]; then
+        # Start with Docker and file syncing
+        echo -e "${GREEN}Starting server with Docker and file syncing...${NC}"
+        
+        # Check if Docker is running
+        if ! docker info &> /dev/null; then
+          echo -e "${RED}Docker is not running. Please start Docker first.${NC}"
+          return
+        fi
+        
+        # Make sure the dev script is executable
+        chmod +x dev.sh
+        
+        # Run the dev script
+        ./dev.sh
+        return
+      fi
+    fi
+    
     # Start the server in development mode in a new terminal window
     if [[ "$OSTYPE" == "darwin"* ]]; then
       # macOS
@@ -220,10 +246,8 @@ start_server() {
     fi
     
     cd ..
-    
-    echo -e "${GREEN}Server started successfully.${NC}"
   else
-    echo -e "${YELLOW}Skipping server start (Server dir not found).${NC}"
+    echo -e "${YELLOW}Node.js server directory not found.${NC}"
   fi
 }
 

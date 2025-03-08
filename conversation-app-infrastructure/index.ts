@@ -281,6 +281,17 @@ const backendConfigMap = new k8s.core.v1.ConfigMap('backend-config', {
     },
 }, { provider });
 
+// Build the processor server Docker image
+const processorServerImage = new docker.Image('processor-server-image', {
+    build: {
+        context: '../conversation-processor-server',
+        dockerfile: '../conversation-processor-server/Dockerfile',
+        target: 'development', // Use the development target for hot reloading
+    },
+    imageName: 'processor-server:latest',
+    skipPush: true, // Skip pushing to a registry since we're using it locally
+});
+
 // Create Backend Deployment
 const backendDeployment = new k8s.apps.v1.Deployment('backend', {
     metadata: {
@@ -291,7 +302,7 @@ const backendDeployment = new k8s.apps.v1.Deployment('backend', {
         selector: {
             matchLabels: { app: 'backend' },
         },
-        replicas: 2,
+        replicas: 1, // Reduced to 1 for development
         template: {
             metadata: {
                 labels: { app: 'backend' },
@@ -299,15 +310,15 @@ const backendDeployment = new k8s.apps.v1.Deployment('backend', {
             spec: {
                 containers: [{
                     name: 'backend',
-                    image: 'nginx:latest',
-                    ports: [{ containerPort: 80 }],
+                    image: processorServerImage.imageName,
+                    ports: [{ containerPort: 3000 }],
                     envFrom: [{
                         configMapRef: { name: backendConfigMap.metadata.name },
                     }],
                     readinessProbe: {
                         httpGet: {
                             path: '/',
-                            port: 80,
+                            port: 3000,
                         },
                         initialDelaySeconds: 10,
                         periodSeconds: 5,
@@ -315,10 +326,22 @@ const backendDeployment = new k8s.apps.v1.Deployment('backend', {
                     livenessProbe: {
                         httpGet: {
                             path: '/',
-                            port: 80,
+                            port: 3000,
                         },
                         initialDelaySeconds: 30,
                         periodSeconds: 15,
+                    },
+                    // Add volume mounts for file syncing
+                    volumeMounts: [{
+                        name: 'src-volume',
+                        mountPath: '/app/src',
+                    }],
+                }],
+                // Add volumes for file syncing
+                volumes: [{
+                    name: 'src-volume',
+                    hostPath: {
+                        path: '../conversation-processor-server/src',
                     },
                 }],
             },
@@ -334,20 +357,20 @@ const backendService = new k8s.core.v1.Service('backend-service', {
     },
     spec: {
         selector: { app: 'backend' },
-        ports: [{ port: 3000, targetPort: 80 }],
+        ports: [{ port: 3000, targetPort: 3000 }],
         type: 'ClusterIP',
     },
 }, { provider });
 
-// Create Ingress for exposing services
+// Create a single Ingress for exposing all services
+// We removed the HTTPS configuration and K8s Dashboard references
 const ingress = new k8s.networking.v1.Ingress('app-ingress', {
     metadata: {
         name: 'app-ingress',
         namespace: namespace.metadata.name,
         annotations: {
             'kubernetes.io/ingress.class': 'nginx',
-            'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
-            'nginx.ingress.kubernetes.io/use-regex': 'true',
+            'nginx.ingress.kubernetes.io/rewrite-target': '/',
         },
     },
     spec: {
@@ -356,9 +379,10 @@ const ingress = new k8s.networking.v1.Ingress('app-ingress', {
                 host: 'conversation-app.local',
                 http: {
                     paths: [
+                        // App paths
                         {
-                            path: '/api(/|$)(.*)',
-                            pathType: 'ImplementationSpecific',
+                            path: '/api',
+                            pathType: 'Prefix',
                             backend: {
                                 service: {
                                     name: backendService.metadata.name,
@@ -367,8 +391,8 @@ const ingress = new k8s.networking.v1.Ingress('app-ingress', {
                             },
                         },
                         {
-                            path: '/minio(/|$)(.*)',
-                            pathType: 'ImplementationSpecific',
+                            path: '/minio',
+                            pathType: 'Prefix',
                             backend: {
                                 service: {
                                     name: minioService.metadata.name,
@@ -376,6 +400,7 @@ const ingress = new k8s.networking.v1.Ingress('app-ingress', {
                                 },
                             },
                         },
+                        // We'll add monitoring paths conditionally after creating the monitoring services
                     ],
                 },
             },
@@ -552,49 +577,23 @@ if (enableMonitoring) {
         },
     }, { provider });
 
-    // Deploy Kubernetes Dashboard for a native K8s UI
-    const k8sDashboard = new k8s.helm.v3.Release('kubernetes-dashboard', {
-        chart: 'kubernetes-dashboard',
-        version: '6.0.8', // Specify a stable version
-        namespace: monitoringNs.metadata.name,
-        repositoryOpts: {
-            repo: 'https://kubernetes.github.io/dashboard/',
-        },
-        values: {
-            service: {
-                type: 'ClusterIP',
-            },
-            ingress: {
-                enabled: true,
-                hosts: ['k8s-dashboard.conversation-app.local'],
-                path: '/',
-            },
-            metricsScraper: {
-                enabled: true,
-            },
-        },
-    }, { provider });
-
-    // Create an Ingress for the monitoring tools
     // Get the enableMonitoringIngress config value, default to false to avoid initial deployment issues
-    const enableMonitoringIngress = config.getBoolean('enableMonitoringIngress') ?? false;
+    const enableMonitoringIngress = config.getBoolean('enableMonitoringIngress') ?? true;
     
     if (enableMonitoringIngress) {
         // Create stable services that select the backend pods by labels
         // These services will have consistent names regardless of the underlying deployment names
         
-        // Grafana Service
+        // Grafana Service - Updated selectors for better pod matching
         const stableGrafanaService = new k8s.core.v1.Service('stable-grafana-service', {
             metadata: {
                 name: 'stable-grafana',
                 namespace: monitoringNs.metadata.name,
-                annotations: {
-                    'nginx.ingress.kubernetes.io/service-upstream': 'true',
-                },
             },
             spec: {
                 selector: {
                     'app.kubernetes.io/name': 'grafana',
+                    'app.kubernetes.io/instance': 'prometheus-operator',
                 },
                 ports: [{
                     name: 'http',
@@ -605,18 +604,16 @@ if (enableMonitoring) {
             },
         }, { provider, dependsOn: [prometheusOperator] });
 
-        // Prometheus Service
+        // Prometheus Service - Updated selectors
         const stablePrometheusService = new k8s.core.v1.Service('stable-prometheus-service', {
             metadata: {
                 name: 'stable-prometheus',
                 namespace: monitoringNs.metadata.name,
-                annotations: {
-                    'nginx.ingress.kubernetes.io/service-upstream': 'true',
-                },
             },
             spec: {
                 selector: {
                     'app.kubernetes.io/name': 'prometheus',
+                    'app.kubernetes.io/instance': 'prometheus-operator-kube-prometheus',
                 },
                 ports: [{
                     name: 'http',
@@ -627,18 +624,16 @@ if (enableMonitoring) {
             },
         }, { provider, dependsOn: [prometheusOperator] });
 
-        // Alertmanager Service
+        // Alertmanager Service - Updated selectors
         const stableAlertmanagerService = new k8s.core.v1.Service('stable-alertmanager-service', {
             metadata: {
                 name: 'stable-alertmanager',
                 namespace: monitoringNs.metadata.name,
-                annotations: {
-                    'nginx.ingress.kubernetes.io/service-upstream': 'true',
-                },
             },
             spec: {
                 selector: {
                     'app.kubernetes.io/name': 'alertmanager',
+                    'app.kubernetes.io/instance': 'prometheus-operator',
                 },
                 ports: [{
                     name: 'http',
@@ -649,178 +644,64 @@ if (enableMonitoring) {
             },
         }, { provider, dependsOn: [prometheusOperator] });
 
-        // Kubernetes Dashboard Service
-        const stableK8sDashboardService = new k8s.core.v1.Service('stable-k8s-dashboard-service', {
+        // Now that we have created all the monitoring services, add them to the main ingress
+        // We use an ingress patch to add the monitoring paths to the existing ingress
+        const ingressPatch = new k8s.networking.v1.Ingress('ingress-patch', {
             metadata: {
-                name: 'stable-k8s-dashboard',
-                namespace: monitoringNs.metadata.name,
-                annotations: {
-                    'nginx.ingress.kubernetes.io/service-upstream': 'true',
-                },
+                name: ingress.metadata.name,
+                namespace: ingress.metadata.namespace,
             },
             spec: {
-                selector: {
-                    'app.kubernetes.io/component': 'kubernetes-dashboard',
-                },
-                ports: [{
-                    name: 'https',
-                    port: 443,
-                    targetPort: 8443,
-                    protocol: 'TCP',
+                rules: [{
+                    host: 'conversation-app.local',
+                    http: {
+                        paths: [
+                            // Grafana
+                            {
+                                path: '/grafana',
+                                pathType: 'Prefix',
+                                backend: {
+                                    service: {
+                                        name: stableGrafanaService.metadata.name,
+                                        port: { number: 80 },
+                                    },
+                                },
+                            },
+                            // Prometheus
+                            {
+                                path: '/prometheus',
+                                pathType: 'Prefix',
+                                backend: {
+                                    service: {
+                                        name: stablePrometheusService.metadata.name,
+                                        port: { number: 9090 },
+                                    },
+                                },
+                            },
+                            // Alertmanager
+                            {
+                                path: '/alertmanager',
+                                pathType: 'Prefix',
+                                backend: {
+                                    service: {
+                                        name: stableAlertmanagerService.metadata.name,
+                                        port: { number: 9093 },
+                                    },
+                                },
+                            },
+                        ],
+                    },
                 }],
             },
-        }, { provider, dependsOn: [k8sDashboard] });
-
-        // Create separate ingress resources for each service
-        
-        // Grafana Ingress
-        const grafanaIngress = new k8s.networking.v1.Ingress('grafana-ingress', {
-            metadata: {
-                name: 'grafana-ingress',
-                namespace: monitoringNs.metadata.name,
-                annotations: {
-                    'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
-                    'kubernetes.io/ingress.class': 'nginx',
-                    'nginx.ingress.kubernetes.io/ssl-redirect': 'false',
-                    'nginx.ingress.kubernetes.io/proxy-body-size': '0',
-                    'nginx.ingress.kubernetes.io/proxy-read-timeout': '600',
-                    'nginx.ingress.kubernetes.io/proxy-send-timeout': '600',
-                },
-            },
-            spec: {
-                rules: [
-                    {
-                        host: 'conversation-app.local',
-                        http: {
-                            paths: [
-                                {
-                                    path: '/grafana(/|$)(.*)',
-                                    pathType: 'ImplementationSpecific',
-                                    backend: {
-                                        service: {
-                                            name: stableGrafanaService.metadata.name,
-                                            port: { number: 80 },
-                                        },
-                                    },
-                                },
-                            ],
-                        },
-                    },
-                ],
-            },
-        }, { provider, dependsOn: [stableGrafanaService] });
-
-        // Prometheus Ingress
-        const prometheusIngress = new k8s.networking.v1.Ingress('prometheus-ingress', {
-            metadata: {
-                name: 'prometheus-ingress',
-                namespace: monitoringNs.metadata.name,
-                annotations: {
-                    'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
-                    'kubernetes.io/ingress.class': 'nginx',
-                    'nginx.ingress.kubernetes.io/ssl-redirect': 'false',
-                    'nginx.ingress.kubernetes.io/proxy-body-size': '0',
-                    'nginx.ingress.kubernetes.io/proxy-read-timeout': '600',
-                    'nginx.ingress.kubernetes.io/proxy-send-timeout': '600',
-                },
-            },
-            spec: {
-                rules: [
-                    {
-                        host: 'conversation-app.local',
-                        http: {
-                            paths: [
-                                {
-                                    path: '/prometheus(/|$)(.*)',
-                                    pathType: 'ImplementationSpecific',
-                                    backend: {
-                                        service: {
-                                            name: stablePrometheusService.metadata.name,
-                                            port: { number: 9090 },
-                                        },
-                                    },
-                                },
-                            ],
-                        },
-                    },
-                ],
-            },
-        }, { provider, dependsOn: [stablePrometheusService] });
-
-        // Alertmanager Ingress
-        const alertmanagerIngress = new k8s.networking.v1.Ingress('alertmanager-ingress', {
-            metadata: {
-                name: 'alertmanager-ingress',
-                namespace: monitoringNs.metadata.name,
-                annotations: {
-                    'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
-                    'kubernetes.io/ingress.class': 'nginx',
-                    'nginx.ingress.kubernetes.io/ssl-redirect': 'false',
-                    'nginx.ingress.kubernetes.io/proxy-body-size': '0',
-                    'nginx.ingress.kubernetes.io/proxy-read-timeout': '600',
-                    'nginx.ingress.kubernetes.io/proxy-send-timeout': '600',
-                },
-            },
-            spec: {
-                rules: [
-                    {
-                        host: 'conversation-app.local',
-                        http: {
-                            paths: [
-                                {
-                                    path: '/alertmanager(/|$)(.*)',
-                                    pathType: 'ImplementationSpecific',
-                                    backend: {
-                                        service: {
-                                            name: stableAlertmanagerService.metadata.name,
-                                            port: { number: 9093 },
-                                        },
-                                    },
-                                },
-                            ],
-                        },
-                    },
-                ],
-            },
-        }, { provider, dependsOn: [stableAlertmanagerService] });
-
-        // Kubernetes Dashboard Ingress
-        const k8sDashboardIngress = new k8s.networking.v1.Ingress('k8s-dashboard-ingress', {
-            metadata: {
-                name: 'k8s-dashboard-ingress',
-                namespace: monitoringNs.metadata.name,
-                annotations: {
-                    'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
-                    'kubernetes.io/ingress.class': 'nginx',
-                    'nginx.ingress.kubernetes.io/ssl-redirect': 'false',
-                    'nginx.ingress.kubernetes.io/backend-protocol': 'HTTPS',
-                    'nginx.ingress.kubernetes.io/proxy-body-size': '0',
-                    'nginx.ingress.kubernetes.io/proxy-read-timeout': '600',
-                    'nginx.ingress.kubernetes.io/proxy-send-timeout': '600',
-                },
-            },
-            spec: {
-                rules: [
-                    {
-                        host: 'conversation-app.local',
-                        http: {
-                            paths: [
-                                {
-                                    path: '/k8s-dashboard(/|$)(.*)',
-                                    pathType: 'ImplementationSpecific',
-                                    backend: {
-                                        service: {
-                                            name: stableK8sDashboardService.metadata.name,
-                                            port: { number: 443 },
-                                        },
-                                    },
-                                },
-                            ],
-                        },
-                    },
-                ],
-            },
-        }, { provider, dependsOn: [stableK8sDashboardService] });
+        }, { 
+            provider, 
+            dependsOn: [
+                ingress,
+                stableGrafanaService, 
+                stablePrometheusService, 
+                stableAlertmanagerService
+            ],
+        });
     }
 }
 
@@ -838,7 +719,9 @@ export const namespaceName = namespace.metadata.name;
 export const grafanaUrl = enableMonitoring ? pulumi.interpolate`http://conversation-app.local/grafana` : undefined;
 export const prometheusUrl = enableMonitoring ? pulumi.interpolate`http://conversation-app.local/prometheus` : undefined;
 export const alertmanagerUrl = enableMonitoring ? pulumi.interpolate`http://conversation-app.local/alertmanager` : undefined;
-export const k8sDashboardUrl = enableMonitoring ? pulumi.interpolate`http://conversation-app.local/k8s-dashboard` : undefined;
+
+// Add Lens recommendation
+export const k8sClusterManagement = 'Use Lens to manage your Kubernetes cluster (https://k8slens.dev/)';
 
 // Add hosts entry reminder
 export const hostsEntryReminder = pulumi.interpolate`
