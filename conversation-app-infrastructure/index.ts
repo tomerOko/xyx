@@ -128,7 +128,7 @@ const minioInitJob = new k8s.batch.v1.Job('minio-init', {
             spec: {
                 containers: [{
                     name: 'mc',
-                    image: 'minio/mc:RELEASE.2023-10-16T04-13-43Z',
+                    image: 'minio/mc:latest',
                     command: ['/bin/sh', '-c'],
                     args: [pulumi.interpolate`
                         mc alias set myminio http://minio:9000 minio ${minioPassword.result} &&
@@ -296,23 +296,23 @@ const backendDeployment = new k8s.apps.v1.Deployment('backend', {
             spec: {
                 containers: [{
                     name: 'backend',
-                    image: 'your-docker-registry/conversation-processor-server:latest',
-                    ports: [{ containerPort: 3000 }],
+                    image: 'nginx:latest',
+                    ports: [{ containerPort: 80 }],
                     envFrom: [{
                         configMapRef: { name: backendConfigMap.metadata.name },
                     }],
                     readinessProbe: {
                         httpGet: {
-                            path: '/health',
-                            port: 3000,
+                            path: '/',
+                            port: 80,
                         },
                         initialDelaySeconds: 10,
                         periodSeconds: 5,
                     },
                     livenessProbe: {
                         httpGet: {
-                            path: '/health',
-                            port: 3000,
+                            path: '/',
+                            port: 80,
                         },
                         initialDelaySeconds: 30,
                         periodSeconds: 15,
@@ -331,7 +331,7 @@ const backendService = new k8s.core.v1.Service('backend-service', {
     },
     spec: {
         selector: { app: 'backend' },
-        ports: [{ port: 3000, targetPort: 3000 }],
+        ports: [{ port: 3000, targetPort: 80 }],
         type: 'ClusterIP',
     },
 }, { provider });
@@ -343,6 +343,8 @@ const ingress = new k8s.networking.v1.Ingress('app-ingress', {
         namespace: namespace.metadata.name,
         annotations: {
             'kubernetes.io/ingress.class': 'nginx',
+            'nginx.ingress.kubernetes.io/rewrite-target': '/$2',
+            'nginx.ingress.kubernetes.io/use-regex': 'true',
         },
     },
     spec: {
@@ -352,8 +354,8 @@ const ingress = new k8s.networking.v1.Ingress('app-ingress', {
                 http: {
                     paths: [
                         {
-                            path: '/api',
-                            pathType: 'Prefix',
+                            path: '/api(/|$)(.*)',
+                            pathType: 'ImplementationSpecific',
                             backend: {
                                 service: {
                                     name: backendService.metadata.name,
@@ -362,8 +364,8 @@ const ingress = new k8s.networking.v1.Ingress('app-ingress', {
                             },
                         },
                         {
-                            path: '/minio',
-                            pathType: 'Prefix',
+                            path: '/minio(/|$)(.*)',
+                            pathType: 'ImplementationSpecific',
                             backend: {
                                 service: {
                                     name: minioService.metadata.name,
