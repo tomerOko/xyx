@@ -296,23 +296,24 @@ const backendDeployment = new k8s.apps.v1.Deployment('backend', {
             spec: {
                 containers: [{
                     name: 'backend',
-                    image: 'nginx:latest',
-                    ports: [{ containerPort: 80 }],
+                    image: 'conversation-processor-server:latest',
+                    imagePullPolicy: 'IfNotPresent',
+                    ports: [{ containerPort: 3000 }],
                     envFrom: [{
                         configMapRef: { name: backendConfigMap.metadata.name },
                     }],
                     readinessProbe: {
                         httpGet: {
-                            path: '/',
-                            port: 80,
+                            path: '/health',
+                            port: 3000,
                         },
                         initialDelaySeconds: 10,
                         periodSeconds: 5,
                     },
                     livenessProbe: {
                         httpGet: {
-                            path: '/',
-                            port: 80,
+                            path: '/health',
+                            port: 3000,
                         },
                         initialDelaySeconds: 30,
                         periodSeconds: 15,
@@ -331,7 +332,7 @@ const backendService = new k8s.core.v1.Service('backend-service', {
     },
     spec: {
         selector: { app: 'backend' },
-        ports: [{ port: 3000, targetPort: 80 }],
+        ports: [{ port: 3000, targetPort: 3000 }],
         type: 'ClusterIP',
     },
 }, { provider });

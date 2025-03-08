@@ -83,3 +83,23 @@ export const getAudioTranscript = async (
     next(error);
   }
 };
+
+export const echoRequest = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    logger.info('Echo request received');
+    
+    res.status(200).json({
+      message: 'Echo endpoint',
+      timestamp: new Date().toISOString(),
+      body: req.body,
+      headers: req.headers
+    });
+  } catch (error) {
+    logger.error('Error in echoRequest:', error);
+    next(error);
+  }
+};

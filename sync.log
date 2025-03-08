@@ -14,3 +14,39 @@ Press Ctrl+C to stop synchronization
 
 Sat Mar 8 20:38:44 IST 2025: Code synchronized
 [32m[nodemon] clean exit - waiting for changes before restart[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `npm run build && kubectl cp dist/ conversation-app/backend-6476464655-9mgrp:/app/ && echo Sat Mar  8 20:38:44 IST 2025: Code synchronized`[39m
+
+> conversation-processor-server@1.0.0 build
+> tsc
+
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `npm run build && kubectl cp dist/ conversation-app/backend-6476464655-9mgrp:/app/ && echo Sat Mar  8 20:38:44 IST 2025: Code synchronized`[39m
+
+> conversation-processor-server@1.0.0 build
+> tsc
+
+Sat Mar 8 20:38:44 IST 2025: Code synchronized
+[32m[nodemon] clean exit - waiting for changes before restart[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `npm run build && kubectl cp dist/ conversation-app/backend-6476464655-9mgrp:/app/ && echo Sat Mar  8 20:38:44 IST 2025: Code synchronized`[39m
+
+> conversation-processor-server@1.0.0 build
+> tsc
+
+src/routes/audioRoutes.ts(2,43): error TS2305: Module '"../controllers/audioController"' has no exported member 'echoRequest'.
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `npm run build && kubectl cp dist/ conversation-app/backend-6476464655-9mgrp:/app/ && echo Sat Mar  8 20:38:44 IST 2025: Code synchronized`[39m
+
+> conversation-processor-server@1.0.0 build
+> tsc
+
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `npm run build && kubectl cp dist/ conversation-app/backend-6476464655-9mgrp:/app/ && echo Sat Mar  8 20:38:44 IST 2025: Code synchronized`[39m
+
+> conversation-processor-server@1.0.0 build
+> tsc
+
+Sat Mar 8 20:38:44 IST 2025: Code synchronized
+[32m[nodemon] clean exit - waiting for changes before restart[39m
