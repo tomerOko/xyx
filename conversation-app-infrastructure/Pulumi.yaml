@@ -1,0 +1,3 @@
+name: conversation-app-infrastructure
+runtime: nodejs
+description: Kubernetes infrastructure for conversation recording and processing application

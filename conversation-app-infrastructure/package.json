@@ -1,0 +1,14 @@
+{
+  "name": "conversation-app-infrastructure",
+  "version": "1.0.0",
+  "devDependencies": {
+    "@types/node": "^20.8.6",
+    "typescript": "^5.2.2"
+  },
+  "dependencies": {
+    "@pulumi/docker": "^4.4.2",
+    "@pulumi/kubernetes": "^4.5.5",
+    "@pulumi/pulumi": "^3.86.0",
+    "@pulumi/random": "^4.14.0"
+  }
+}
